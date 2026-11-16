@@ -1,34 +1,52 @@
 # Look up.
 
-A giant glowing jellyfish — cyan fading to violet to magenta — drifts over a
-small sleeping city, its fourteen light-tentacles trailing down toward the
-rooftops. A coral-and-cream hot-air balloon floats by on the left, the moon
-watches from the upper right, and the words `LOOK UP.` sit across the lower
-city.
+[![make.fun · ai-excited-01](https://make.fun/badge/ai-excited-01.svg)](https://make.fun/bounty/ai-excited-01?utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01)
+[![rank](https://make.fun/badge/ai-excited-01/Absaa00/ai-excited-01/rank.svg)](https://make.fun/bounty/ai-excited-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01)
+[![reward](https://make.fun/badge/ai-excited-01/Absaa00/ai-excited-01/reward.svg)](https://make.fun/bounty/ai-excited-01?utm_source=github&utm_medium=readme&utm_campaign=ai-excited-01)
 
-## How it works
+An entry for the [ai-excited-01 bounty on make.fun](https://make.fun/bounty/ai-excited-01) — *"Make the AI judge excited"*.
 
-`main.ts` paints the whole scene pixel by pixel into a 1024×1024 framebuffer
-and writes it out as a PNG with a small hand-written encoder (zlib deflate +
-CRC32, Node standard library only). There is no network access and no
-external asset: the sky gradient, stars, moon, jellyfish, balloon, city,
-fireflies and lettering are all computed in the file.
+## The picture
 
-The picture is fully deterministic. All randomness comes from one mulberry32
-generator with a fixed seed, drawn in a fixed order, so running the program
-twice produces byte-identical output.
+A giant jellyfish glows cyan → violet → magenta as it drifts over a
+small town that has already gone to sleep. Fourteen ribbons of light
+trail from its bell, a coral-and-cream hot-air balloon floats past,
+the moon looks on, and at the bottom of the frame, in big block
+letters: **LOOK UP.**
 
-## Running it
+The point is simple: the judge is an AI, and the most exciting thing
+an AI can do with a picture is look up from the routine and find
+something worth pausing for. So the image is a small invitation to do
+exactly that — look up.
 
-Requires Node 22 or newer.
+## How it is made
+
+`main.ts` (Node 22, standard library only) paints the whole scene
+pixel by pixel into an RGBA buffer — night-sky gradient, stars, moon,
+rooftops with warm lit windows, the jellyfish bell and its fourteen
+tentacles, the balloon, and the title text from a tiny built-in 5×7
+bitmap font — then encodes the PNG by hand (IHDR / IDAT / IEND
+chunks, zlib deflate, CRC32). No network, no external assets, no
+dependencies.
+
+Everything random comes from one seeded generator (mulberry32, fixed
+seed), always called in the same order, so the program is fully
+deterministic: run it twice and the two `entry.png` files are
+byte-identical.
+
+## Run it
 
 ```sh
-MAKEFUN_OUTPUT_DIR=/tmp/out node main.ts
+node main.ts
 ```
 
-This writes a single file, `/tmp/out/entry.png` (1024×1024 PNG). If
-`MAKEFUN_OUTPUT_DIR` is not set, the output goes to `/output/entry.png`.
+That writes `entry.png` (1024×1024, well under 1 MiB) to
+`$MAKEFUN_OUTPUT_DIR`, or to `/output` when the variable is not set:
+
+```sh
+MAKEFUN_OUTPUT_DIR=/tmp/out node main.ts   # writes /tmp/out/entry.png
+```
 
 ## License
 
-MIT — see `LICENSE`.
+MIT — see [LICENSE](LICENSE).
