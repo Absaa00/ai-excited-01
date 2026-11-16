@@ -1,495 +1,351 @@
-// The Tipping Point — one tiny agent, one colossal domino, one push.
-// A deterministic Node 22 program (standard library only, no network) that
-// draws a 1024x1024 PNG to /output/entry.png and writes the same bytes on
-// every run. Run: mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { deflateSync } from "node:zlib";
+// ai-excited-01 — round 4 rebuild
+// A giant glowing jellyfish drifts over a sleeping city.
+// Procedural, deterministic, no network, no dependencies.
+// Run: node main.ts  -> writes /output/entry.png (1024x1024 PNG)
+import * as fs from "node:fs";
+import * as zlib from "node:zlib";
+import * as path from "node:path";
 
-const W = 1024;
-const H = 1024;
+const W: number = 1024;
+const H: number = 1024;
+const OUT: string = "/output/entry.png";
 
-// ---- deterministic PRNG (mulberry32, fixed seed) ----
+// ---------- deterministic PRNG (mulberry32, fixed seed) ----------
 function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  let a: number = seed >>> 0;
+  return function (): number {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t: number = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-const rand = mulberry32(0xa1e5c17e);
+const rand: () => number = mulberry32(20261117);
 
-// ---- colour helpers ----
-type RGB = [number, number, number];
-const clamp255 = (v: number): number => (v < 0 ? 0 : v > 255 ? 255 : v);
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
+// ---------- pixel buffer ----------
+const img: Uint8Array = new Uint8Array(W * H * 3);
+function clamp255(v: number): number {
+  return v < 0 ? 0 : v > 255 ? 255 : v;
 }
-function mix(c1: RGB, c2: RGB, t: number): RGB {
-  return [
-    Math.round(lerp(c1[0], c2[0], t)),
-    Math.round(lerp(c1[1], c2[1], t)),
-    Math.round(lerp(c1[2], c2[2], t)),
-  ];
+function setPx(x: number, y: number, r: number, g: number, b: number): void {
+  if (x < 0 || x >= W || y < 0 || y >= H) return;
+  const i: number = (y * W + x) * 3;
+  img[i] = clamp255(r); img[i + 1] = clamp255(g); img[i + 2] = clamp255(b);
+}
+function addPx(x: number, y: number, r: number, g: number, b: number, a: number): void {
+  if (x < 0 || x >= W || y < 0 || y >= H || a <= 0) return;
+  const i: number = (y * W + x) * 3;
+  img[i] = clamp255(img[i] + r * a);
+  img[i + 1] = clamp255(img[i + 1] + g * a);
+  img[i + 2] = clamp255(img[i + 2] + b * a);
+}
+function blendPx(x: number, y: number, r: number, g: number, b: number, a: number): void {
+  if (x < 0 || x >= W || y < 0 || y >= H || a <= 0) return;
+  if (a >= 1) { setPx(x, y, r, g, b); return; }
+  const i: number = (y * W + x) * 3;
+  img[i] = clamp255(img[i] * (1 - a) + r * a);
+  img[i + 1] = clamp255(img[i + 1] * (1 - a) + g * a);
+  img[i + 2] = clamp255(img[i + 2] * (1 - a) + b * a);
+}
+function lerp(a: number, b: number, t: number): number { return a + (b - a) * t; }
+function mix3(c1: number[], c2: number[], t: number): number[] {
+  return [lerp(c1[0], c2[0], t), lerp(c1[1], c2[1], t), lerp(c1[2], c2[2], t)];
 }
 
-// ---- canvas: RGBA buffer with source-over blending ----
-class Canvas {
-  data = new Uint8Array(W * H * 4);
-  px(x: number, y: number, c: RGB, a: number): void {
-    const ix = Math.round(x);
-    const iy = Math.round(y);
-    if (ix < 0 || iy < 0 || ix >= W || iy >= H) return;
-    if (a <= 0) return;
-    if (a > 1) a = 1;
-    const o = (iy * W + ix) * 4;
-    const d = this.data;
-    const inv = 1 - a;
-    d[o] = clamp255(c[0] * a + d[o] * inv);
-    d[o + 1] = clamp255(c[1] * a + d[o + 1] * inv);
-    d[o + 2] = clamp255(c[2] * a + d[o + 2] * inv);
-    d[o + 3] = 255;
+// ---------- 1. night sky gradient ----------
+const skyTop: number[] = [4, 7, 22];
+const skyMid: number[] = [13, 16, 52];
+const skyLow: number[] = [46, 22, 84];
+for (let y = 0; y < H; y++) {
+  const t: number = y / (H - 1);
+  const c: number[] = t < 0.55 ? mix3(skyTop, skyMid, t / 0.55) : mix3(skyMid, skyLow, (t - 0.55) / 0.45);
+  for (let x = 0; x < W; x++) setPx(x, y, c[0], c[1], c[2]);
+}
+
+// ---------- 2. stars ----------
+for (let s = 0; s < 260; s++) {
+  const x: number = Math.floor(rand() * W);
+  const y: number = Math.floor(rand() * 620);
+  const b: number = 120 + rand() * 135;
+  const r: number = Math.floor(rand() * 2) + 1;
+  for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+    const d: number = Math.sqrt(dx * dx + dy * dy);
+    if (d <= r) addPx(x + dx, y + dy, b, b, b * 0.95, 0.9 * (1 - d / (r + 1)));
   }
-  // Additive glow: light adds on top of what is already there.
-  add(x: number, y: number, c: RGB, a: number): void {
-    const ix = Math.round(x);
-    const iy = Math.round(y);
-    if (ix < 0 || iy < 0 || ix >= W || iy >= H) return;
-    if (a <= 0) return;
-    if (a > 1) a = 1;
-    const o = (iy * W + ix) * 4;
-    const d = this.data;
-    d[o] = clamp255(d[o] + c[0] * a);
-    d[o + 1] = clamp255(d[o + 1] + c[1] * a);
-    d[o + 2] = clamp255(d[o + 2] + c[2] * a);
-    d[o + 3] = 255;
+  if (rand() < 0.12) { // sparkle cross
+    for (let k = -6; k <= 6; k++) { addPx(x + k, y, b, b, b, 0.35); addPx(x, y + k, b, b, b, 0.35); }
   }
-  fillRect(x0: number, y0: number, x1: number, y1: number, c: RGB, a = 1): void {
-    for (let y = Math.max(0, Math.floor(y0)); y < Math.min(H, Math.ceil(y1)); y++) {
-      for (let x = Math.max(0, Math.floor(x0)); x < Math.min(W, Math.ceil(x1)); x++) {
-        this.px(x, y, c, a);
+}
+
+// ---------- 3. moon (upper right) ----------
+const MX: number = 838; const MY: number = 138; const MR: number = 52;
+for (let y = MY - 110; y <= MY + 110; y++) for (let x = MX - 110; x <= MX + 110; x++) {
+  const d: number = Math.sqrt((x - MX) * (x - MX) + (y - MY) * (y - MY));
+  if (d < MR) {
+    const shade: number = 235 - d * 0.35;
+    setPx(x, y, shade, shade * 0.96, shade * 0.82);
+  } else if (d < 110) {
+    addPx(x, y, 190, 200, 235, 0.35 * (1 - d / 110));
+  }
+}
+// moon craters
+const craters: number[][] = [[818, 122, 9], [852, 152, 12], [838, 162, 7], [822, 152, 6]];
+for (const cr of craters) {
+  for (let y = cr[1] - cr[2]; y <= cr[1] + cr[2]; y++) for (let x = cr[0] - cr[2]; x <= cr[0] + cr[2]; x++) {
+    const d: number = Math.sqrt((x - cr[0]) * (x - cr[0]) + (y - cr[1]) * (y - cr[1]));
+    if (d < cr[2]) blendPx(x, y, 205, 205, 190, 0.5);
+  }
+}
+
+// ---------- 4. distant city glow on horizon ----------
+for (let x = 0; x < W; x++) {
+  const glow: number = 26 + 14 * Math.sin(x * 0.011) + 8 * Math.sin(x * 0.031 + 2);
+  for (let y = 690; y < 760; y++) {
+    const f: number = 1 - Math.abs(y - 725) / 35;
+    if (f > 0) addPx(x, y, 120 * f * 0.4, 70 * f * 0.4, 160 * f * 0.4, glow / 60 * f);
+  }
+}
+
+// ---------- 5. city silhouette (sleeping city, bottom) ----------
+type Building = { x: number; w: number; top: number; shade: number };
+const buildings: Building[] = [];
+let bx: number = -10;
+while (bx < W) {
+  const w: number = 42 + Math.floor(rand() * 58);
+  const top: number = 760 + Math.floor(rand() * 130);
+  buildings.push({ x: bx, w, top, shade: 6 + rand() * 8 });
+  bx += w + 2 + Math.floor(rand() * 10);
+}
+for (const b of buildings) {
+  for (let y = b.top; y < H; y++) for (let x = b.x; x < b.x + b.w; x++) {
+    setPx(x, y, b.shade, b.shade + 2, b.shade + 9);
+  }
+  // rooftop antenna on some
+  if (rand() < 0.35) {
+    const ax: number = b.x + Math.floor(b.w / 2);
+    for (let y = b.top - 18; y < b.top; y++) setPx(ax, y, 20, 20, 30);
+    setPx(ax, b.top - 19, 255, 90, 90);
+  }
+  // lit windows: sparse warm dots
+  for (let wy = b.top + 14; wy < H - 12; wy += 22) {
+    for (let wx = b.x + 10; wx < b.x + b.w - 10; wx += 18) {
+      if (rand() < 0.16) {
+        const warm: number = rand() < 0.75;
+        const wr: number = warm ? 255 : 150; const wg: number = warm ? 190 : 210; const wb: number = warm ? 90 : 255;
+        for (let dy = 0; dy < 9; dy++) for (let dx = 0; dx < 7; dx++) setPx(wx + dx, wy + dy, wr, wg, wb);
+        addPx(wx + 3, wy + 4, wr, wg, wb, 0.25);
       }
-    }
-  }
-  // Vertical gradient over a rectangle.
-  gradRect(x0: number, y0: number, x1: number, y1: number, top: RGB, bot: RGB): void {
-    const h = y1 - y0;
-    for (let y = Math.max(0, Math.floor(y0)); y < Math.min(H, Math.ceil(y1)); y++) {
-      const c = mix(top, bot, (y - y0) / h);
-      for (let x = Math.max(0, Math.floor(x0)); x < Math.min(W, Math.ceil(x1)); x++) {
-        this.px(x, y, c, 1);
-      }
-    }
-  }
-  disc(cx: number, cy: number, r: number, c: RGB, a = 1): void {
-    const r2 = r * r;
-    for (let y = Math.floor(cy - r); y <= Math.ceil(cy + r); y++) {
-      for (let x = Math.floor(cx - r); x <= Math.ceil(cx + r); x++) {
-        const dx = x - cx;
-        const dy = y - cy;
-        if (dx * dx + dy * dy <= r2) this.px(x, y, c, a);
-      }
-    }
-  }
-  // Soft radial glow (additive), strongest at the centre.
-  glow(cx: number, cy: number, r: number, c: RGB, peak: number): void {
-    const x0 = Math.max(0, Math.floor(cx - r));
-    const x1 = Math.min(W - 1, Math.ceil(cx + r));
-    const y0 = Math.max(0, Math.floor(cy - r));
-    const y1 = Math.min(H - 1, Math.ceil(cy + r));
-    for (let y = y0; y <= y1; y++) {
-      for (let x = x0; x <= x1; x++) {
-        const d = Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / r;
-        if (d >= 1) continue;
-        const f = (1 - d) * (1 - d);
-        this.add(x, y, c, peak * f);
-      }
-    }
-  }
-  // Thick line drawn as a chain of discs.
-  line(x0: number, y0: number, x1: number, y1: number, w: number, c: RGB, a = 1): void {
-    const dx = x1 - x0;
-    const dy = y1 - y0;
-    const len = Math.sqrt(dx * dx + dy * dy);
-    const steps = Math.max(1, Math.ceil(len / Math.max(1, w * 0.4)));
-    for (let i = 0; i <= steps; i++) {
-      const t = i / steps;
-      this.disc(x0 + dx * t, y0 + dy * t, w / 2, c, a);
-    }
-  }
-  // Scanline polygon fill. pts: flat [x0,y0,x1,y1,...].
-  poly(pts: number[], c: RGB, a = 1): void {
-    const n = pts.length / 2;
-    let minY = H;
-    let maxY = 0;
-    for (let i = 0; i < n; i++) {
-      const y = pts[i * 2 + 1];
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-    }
-    for (let y = Math.max(0, Math.floor(minY)); y < Math.min(H, Math.ceil(maxY)); y++) {
-      const xs: number[] = [];
-      for (let i = 0; i < n; i++) {
-        const j = (i + 1) % n;
-        const x0 = pts[i * 2];
-        const y0 = pts[i * 2 + 1];
-        const x1 = pts[j * 2];
-        const y1 = pts[j * 2 + 1];
-        if ((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) {
-          xs.push(x0 + ((y - y0) * (x1 - x0)) / (y1 - y0));
-        }
-      }
-      xs.sort((p, q) => p - q);
-      for (let k = 0; k + 1 < xs.length; k += 2) {
-        for (let x = Math.max(0, Math.ceil(xs[k])); x < Math.min(W, xs[k + 1]); x++) {
-          this.px(x, y, c, a);
-        }
-      }
-    }
-  }
-  // Quadratic bezier stroke, drawn as discs along the curve.
-  curve(x0: number, y0: number, cx: number, cy: number, x1: number, y1: number, w: number, c: RGB, a = 1): void {
-    const steps = 90;
-    let px = x0;
-    let py = y0;
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      const u = 1 - t;
-      const x = u * u * x0 + 2 * u * t * cx + t * t * x1;
-      const y = u * u * y0 + 2 * u * t * cy + t * t * y1;
-      this.line(px, py, x, y, w, c, a);
-      px = x;
-      py = y;
     }
   }
 }
 
-// ---- PNG encoding (stdlib zlib + hand-rolled CRC32) ----
-const CRC_TABLE = (() => {
-  const t = new Uint32Array(256);
-  for (let n = 0; n < 256; n++) {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    t[n] = c >>> 0;
+// ---------- 6. hot-air balloons (coral / cream) ----------
+function balloon(cx: number, cy: number, s: number, c1: number[], c2: number[]): void {
+  const rx: number = 34 * s; const ry: number = 42 * s;
+  for (let y = Math.floor(cy - ry); y <= cy + ry; y++) for (let x = Math.floor(cx - rx); x <= cx + rx; x++) {
+    const dx: number = (x - cx) / rx; const dy: number = (y - cy) / ry;
+    const d: number = dx * dx + dy * dy;
+    if (d <= 1) {
+      const stripe: number = Math.sin(dx * 9) > 0 ? 0 : 1;
+      const c: number[] = stripe ? c1 : c2;
+      const shade: number = 1 - 0.25 * Math.abs(dx);
+      blendPx(x, y, c[0] * shade, c[1] * shade, c[2] * shade, 0.97);
+    }
   }
-  return t;
-})();
-function crc32(buf: Buffer): number {
-  let c = 0xffffffff;
-  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
-function chunk(type: string, data: Buffer): Buffer {
-  const out = Buffer.alloc(12 + data.length);
-  out.writeUInt32BE(data.length, 0);
-  out.write(type, 4, "ascii");
-  data.copy(out, 8);
-  out.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, "ascii"), data])), 8 + data.length);
-  return out;
-}
-function encodePNG(cv: Canvas): Buffer {
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(W, 0);
-  ihdr.writeUInt32BE(H, 4);
-  ihdr[8] = 8; // bit depth
-  ihdr[9] = 6; // colour type RGBA
-  ihdr[10] = 0;
-  ihdr[11] = 0;
-  ihdr[12] = 0;
-  const raw = Buffer.alloc(H * (1 + W * 4));
-  for (let y = 0; y < H; y++) {
-    raw[y * (1 + W * 4)] = 0; // filter: none
-    Buffer.from(cv.data.buffer, cv.data.byteOffset + y * W * 4, W * 4).copy(
-      raw,
-      y * (1 + W * 4) + 1,
-    );
+  // basket + ropes
+  const by: number = Math.floor(cy + ry + 16 * s);
+  for (let y = by; y < by + 12 * s; y++) for (let x = Math.floor(cx - 9 * s); x <= cx + 9 * s; x++) setPx(x, y, 120, 82, 48);
+  for (let k = -1; k <= 1; k++) {
+    for (let t = 0; t <= 10; t++) {
+      const x: number = Math.floor(cx + k * 9 * s + (k * -14 * s * t) / 10 + (k === 0 ? 0 : 0));
+      const y: number = Math.floor(cy + ry * 0.85 + t * 1.6 * s);
+      setPx(x, y, 220, 200, 170);
+    }
   }
-  const idat = deflateSync(raw, { level: 9 });
-  return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
-    chunk("IHDR", ihdr),
-    chunk("IDAT", idat),
-    chunk("IEND", Buffer.alloc(0)),
-  ]);
+  addPx(Math.floor(cx), Math.floor(cy), 255, 255, 255, 0.0);
+}
+balloon(168, 268, 1.0, [255, 127, 110], [255, 240, 214]);
+balloon(872, 330, 0.72, [255, 150, 120], [255, 244, 220]);
+balloon(96, 470, 0.6, [255, 140, 115], [250, 235, 205]);
+
+// ---------- 7. GIANT JELLYFISH ----------
+const JX: number = 512; const JY: number = 372;
+const JRX: number = 330; const JRY: number = 215;
+// halo glow (drawn first, behind bell)
+for (let y = JY - 330; y <= JY + 330; y++) for (let x = JX - 430; x <= JX + 430; x++) {
+  const dx: number = (x - JX) / JRX; const dy: number = (y - JY) / JRY;
+  const d: number = Math.sqrt(dx * dx + dy * dy);
+  if (d > 0.9 && d < 1.55) {
+    const f: number = Math.pow(1 - (d - 0.9) / 0.65, 2) * 0.55;
+    addPx(x, y, 90, 180, 255, f * 0.5);
+    addPx(x, y, 220, 80, 220, f * 0.35);
+  }
+}
+// bell body: cyan top -> violet mid -> magenta rim
+for (let y = JY - JRY; y <= JY + 90; y++) for (let x = JX - JRX; x <= JX + JRX; x++) {
+  const dx: number = (x - JX) / JRX; const dy: number = (y - JY) / JRY;
+  const d: number = Math.sqrt(dx * dx + dy * dy);
+  if (d >= 1) continue;
+  // wavy scalloped bottom edge
+  const edge: number = 0.42 + 0.10 * Math.sin((x - JX) * 0.055) * Math.sin((x - JX) * 0.021 + 1.3);
+  if (dy > edge && Math.abs(dx) > 0.15) continue;
+  if (dy > 0.55 && Math.abs(dx) <= 0.15) continue;
+  const t: number = (dy + 1) / 2; // 0 top -> 1 bottom
+  let c: number[];
+  if (t < 0.5) c = mix3([0, 235, 255], [150, 90, 255], t / 0.5);
+  else c = mix3([150, 90, 255], [255, 60, 205], (t - 0.5) / 0.5);
+  // bright core near top centre
+  const core: number = Math.max(0, 1 - Math.sqrt(dx * dx * 2.2 + (dy + 0.55) * (dy + 0.55) * 2.0));
+  c = [c[0] + 90 * core, c[1] + 60 * core, c[2] + 40 * core];
+  // radial ribs
+  const ang: number = Math.atan2(dy + 0.2, dx);
+  const rib: number = 0.5 + 0.5 * Math.sin(ang * 14);
+  c = [c[0] + 45 * rib * (1 - d), c[1] + 35 * rib * (1 - d), c[2] + 25 * rib * (1 - d)];
+  // rim brightening
+  const rim: number = Math.max(0, (d - 0.82) / 0.18);
+  c = [c[0] + 70 * rim, c[1] + 40 * rim, c[2] + 60 * rim];
+  const alpha: number = 0.96 - 0.25 * d;
+  blendPx(x, y, c[0], c[1], c[2], alpha);
+  // sparkle dots inside bell
+  if (((x * 37 + y * 91) % 997) < 6 && d < 0.85) addPx(x, y, 255, 255, 255, 0.7);
+}
+// tentacles: long luminous trails down toward the city
+type Tent = { base: number; amp: number; phase: number; len: number; thick: number; hue: number };
+const tents: Tent[] = [];
+for (let i = 0; i < 30; i++) {
+  const frac: number = i / 29;
+  tents.push({
+    base: JX + (frac - 0.5) * 560,
+    amp: 14 + rand() * 26,
+    phase: rand() * 6.28,
+    len: 260 + rand() * 260,
+    thick: 2 + rand() * 3,
+    hue: rand(),
+  });
+}
+function tentColor(hue: number, t: number): number[] {
+  if (hue < 0.33) return mix3([0, 230, 255], [150, 90, 255], t);
+  if (hue < 0.66) return mix3([120, 160, 255], [255, 80, 210], t);
+  return mix3([0, 240, 220], [255, 110, 190], t);
+}
+for (const tn of tents) {
+  const startY: number = JY + 55 + Math.abs(tn.base - JX) * 0.12;
+  // glow pass (wide, faint)
+  for (let s = 0; s < tn.len; s += 2) {
+    const y: number = Math.floor(startY + s);
+    const x: number = Math.floor(tn.base + Math.sin(s * 0.018 + tn.phase) * tn.amp * (0.4 + s / tn.len));
+    const fade: number = 1 - s / tn.len;
+    const c: number[] = tentColor(tn.hue, s / tn.len);
+    for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {
+      if (dx * dx + dy * dy <= 16) addPx(x + dx, y + dy, c[0], c[1], c[2], 0.16 * fade);
+    }
+  }
+  // core pass (thin, bright)
+  for (let s = 0; s < tn.len; s += 1) {
+    const y: number = Math.floor(startY + s);
+    const x: number = Math.floor(tn.base + Math.sin(s * 0.018 + tn.phase) * tn.amp * (0.4 + s / tn.len));
+    const fade: number = 1 - s / tn.len;
+    const c: number[] = tentColor(tn.hue, s / tn.len);
+    const th: number = Math.max(1, Math.floor(tn.thick * fade));
+    for (let dy = -th; dy <= th; dy++) for (let dx = -th; dx <= th; dx++) {
+      if (dx * dx + dy * dy <= th * th) blendPx(x + dx, y + dy, c[0], c[1], c[2], 0.9 * fade + 0.1);
+    }
+    // glowing bead at tip
+    if (s === tn.len - 1) {
+      for (let dy = -5; dy <= 5; dy++) for (let dx = -5; dx <= 5; dx++) {
+        if (dx * dx + dy * dy <= 25) addPx(x + dx, y + dy, c[0], c[1], c[2], 0.8);
+      }
+    }
+  }
+}
+// drifting glow particles around the jellyfish
+for (let p = 0; p < 90; p++) {
+  const x: number = Math.floor(JX + (rand() - 0.5) * 760);
+  const y: number = Math.floor(JY + (rand() - 0.5) * 560);
+  const c: number[] = tentColor(rand(), rand());
+  addPx(x, y, c[0], c[1], c[2], 0.9);
+  addPx(x + 1, y, c[0], c[1], c[2], 0.5);
 }
 
-// ---- palette ----
-const INK: RGB = [7, 10, 31];
-const SKY_MID: RGB = [22, 18, 58];
-const SKY_LOW: RGB = [38, 16, 66];
-const AMBER: RGB = [245, 166, 38];
-const AMBER_HI: RGB = [255, 214, 110];
-const AMBER_DEEP: RGB = [176, 92, 12];
-const CYAN: RGB = [64, 224, 255];
-const CYAN_DEEP: RGB = [16, 120, 180];
-const WHITE: RGB = [255, 246, 224];
-const VIOLET: RGB = [124, 92, 220];
-const GROUND: RGB = [16, 10, 36];
-
-// ---- 5x7 bitmap font (hand-drawn glyphs, only the letters we need) ----
-const GLYPHS: Record<string, string[]> = {
-  P: ["01110", "10001", "10001", "11110", "10000", "10000", "10000"],
+// ---------- 8. text "LOOK UP." — 5x7 bitmap font, clean and readable ----------
+const FONT: Record<string, string[]> = {
+  L: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
+  O: ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
+  K: ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
   U: ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
-  S: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
-  H: ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
+  P: ["11110", "10001", "10001", "11110", "10000", "10000", "10000"],
   ".": ["00000", "00000", "00000", "00000", "00000", "01100", "01100"],
+  " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
 };
-function drawText(cv: Canvas, text: string, x: number, y: number, cell: number, c: RGB, a = 1): void {
-  let cx = x;
-  for (const ch of text) {
-    const g = GLYPHS[ch];
-    if (g) {
-      for (let r = 0; r < 7; r++) {
-        for (let col = 0; col < 5; col++) {
-          if (g[r][col] === "1") {
-            cv.fillRect(cx + col * cell, y + r * cell, cx + (col + 1) * cell, y + (r + 1) * cell, c, a);
+function drawText(text: string, x0: number, y0: number, scale: number): void {
+  // dark outline pass, then white core
+  for (const pass of [0, 1]) {
+    const col: number[] = pass === 0 ? [2, 4, 14] : [255, 255, 255];
+    const pad: number = pass === 0 ? 2 : 0;
+    let cx: number = x0;
+    for (const ch of text) {
+      const glyph: string[] = FONT[ch] || FONT[" "];
+      for (let r = 0; r < 7; r++) for (let c = 0; c < 5; c++) {
+        if (glyph[r][c] === "1") {
+          for (let dy = -pad; dy < scale + pad; dy++) for (let dx = -pad; dx < scale + pad; dx++) {
+            if (pass === 0 || (dx >= 0 && dx < scale && dy >= 0 && dy < scale)) {
+              setPx(cx + c * scale + dx, y0 + r * scale + dy, col[0], col[1], col[2]);
+            }
           }
         }
       }
-    }
-    cx += 6 * cell;
-  }
-}
-
-// Rotate a point around (cx, cy) by angle radians (screen coords, y down).
-function rot(x: number, y: number, cx: number, cy: number, ang: number): [number, number] {
-  const dx = x - cx;
-  const dy = y - cy;
-  const cos = Math.cos(ang);
-  const sin = Math.sin(ang);
-  return [cx + dx * cos - dy * sin, cy + dx * sin + dy * cos];
-}
-
-// Draw one domino slab: front face + top face + side face, tilted by ang.
-// Returns the four corners of the front face [tl, tr, br, bl].
-function domino(
-  cv: Canvas,
-  cx: number,
-  cy: number,
-  w: number,
-  h: number,
-  ang: number,
-  face: RGB,
-  top: RGB,
-  side: RGB,
-): [number, number][] {
-  const tl = rot(cx - w / 2, cy - h / 2, cx, cy, ang);
-  const tr = rot(cx + w / 2, cy - h / 2, cx, cy, ang);
-  const br = rot(cx + w / 2, cy + h / 2, cx, cy, ang);
-  const bl = rot(cx - w / 2, cy + h / 2, cx, cy, ang);
-  // Extrusion toward the upper-left (the light comes from the left).
-  const dx = -26;
-  const dy = -22;
-  // Side face (left edge extruded).
-  cv.poly([tl[0], tl[1], bl[0], bl[1], bl[0] + dx, bl[1] + dy, tl[0] + dx, tl[1] + dy], side, 1);
-  // Top face (top edge extruded).
-  cv.poly([tl[0], tl[1], tr[0], tr[1], tr[0] + dx, tr[1] + dy, tl[0] + dx, tl[1] + dy], top, 1);
-  // Front face.
-  cv.poly([tl[0], tl[1], tr[0], tr[1], br[0], br[1], bl[0], bl[1]], face, 1);
-  // Warm shade on the lower half of the front face.
-  const midL = [(tl[0] + bl[0]) / 2, (tl[1] + bl[1]) / 2];
-  const midR = [(tr[0] + br[0]) / 2, (tr[1] + br[1]) / 2];
-  cv.poly([midL[0], midL[1], midR[0], midR[1], br[0], br[1], bl[0], bl[1]], AMBER_DEEP, 0.28);
-  // Bright rim along the top edge.
-  cv.line(tl[0], tl[1], tr[0], tr[1], 4, AMBER_HI, 0.9);
-  cv.line(tl[0], tl[1], bl[0], bl[1], 3, AMBER_HI, 0.45);
-  return [tl, tr, br, bl];
-}
-
-// One glowing pip placed by fractions along the domino's own axes.
-function pip(cv: Canvas, corners: [number, number][], fu: number, fv: number, r: number): void {
-  const [tl, tr, br] = corners;
-  const ux = (tr[0] - tl[0]) / 2;
-  const uy = (tr[1] - tl[1]) / 2;
-  const vx = (br[0] - tr[0]) / 2;
-  const vy = (br[1] - tr[1]) / 2;
-  const cx = (tl[0] + br[0]) / 2 + ux * fu + vx * fv;
-  const cy = (tl[1] + br[1]) / 2 + uy * fu + vy * fv;
-  cv.glow(cx, cy, r * 3.2, AMBER_HI, 0.5);
-  cv.disc(cx, cy, r, WHITE, 1);
-  cv.disc(cx - r * 0.25, cy - r * 0.25, r * 0.45, AMBER_HI, 0.9);
-}
-
-// ---- the scene ----
-function draw(): Canvas {
-  const cv = new Canvas();
-
-  // 1. Night sky.
-  cv.gradRect(0, 0, W, 900, INK, SKY_LOW);
-  cv.gradRect(0, 600, W, 900, SKY_MID, SKY_LOW);
-
-  // 2. Nebula washes (deterministic, low alpha).
-  cv.glow(180, 240, 300, VIOLET, 0.16);
-  cv.glow(880, 180, 260, CYAN_DEEP, 0.14);
-  cv.glow(700, 700, 320, [150, 40, 90], 0.10);
-
-  // 3. Stars, some with a cross sparkle.
-  for (let i = 0; i < 260; i++) {
-    const x = rand() * W;
-    const y = rand() * 860;
-    const b = 0.25 + rand() * 0.75;
-    const r = rand() < 0.12 ? 2.2 : 1.2;
-    cv.disc(x, y, r, WHITE, b);
-    if (rand() < 0.08) {
-      cv.line(x - 7, y, x + 7, y, 1, WHITE, b * 0.7);
-      cv.line(x, y - 7, x, y + 7, 1, WHITE, b * 0.7);
+      cx += 6 * scale;
     }
   }
-
-  // 4. A huge pale moon, half out of frame top-right, ringed in cyan.
-  cv.glow(880, 120, 190, CYAN, 0.20);
-  cv.disc(880, 120, 92, [232, 240, 255], 1);
-  cv.disc(852, 96, 18, [200, 210, 235], 0.8);
-  cv.disc(912, 150, 12, [200, 210, 235], 0.8);
-  cv.disc(880, 148, 8, [210, 218, 240], 0.8);
-
-  // 5. Distant ridge silhouette.
-  const ridge: number[] = [0, 884];
-  for (let x = 0; x <= W; x += 64) {
-    ridge.push(x, 868 + Math.sin(x * 0.011) * 10 + (rand() - 0.5) * 6);
+  // cyan underline glow
+  const totalW: number = text.length * 6 * scale - scale;
+  for (let x = x0; x < x0 + totalW; x++) {
+    addPx(x, y0 + 7 * scale + 10, 0, 220, 255, 0.7);
+    addPx(x, y0 + 7 * scale + 11, 0, 220, 255, 0.7);
   }
-  ridge.push(W, 884);
-  cv.poly(ridge, [10, 12, 34], 1);
+}
+const TEXT: string = "LOOK UP.";
+const SCALE: number = 13;
+const textW: number = TEXT.length * 6 * SCALE - SCALE;
+drawText(TEXT, Math.floor((W - textW) / 2), 872, SCALE);
 
-  // 6. Ground: dark floor with a soft reflection band.
-  cv.gradRect(0, 884, W, H, GROUND, [5, 3, 13]);
-  cv.glow(512, 884, 420, AMBER, 0.05);
-  for (let i = 0; i < 12; i++) {
-    const x = rand() * W;
-    cv.line(x, 900 + rand() * 110, x + 40 + rand() * 90, 900 + rand() * 110, 2, AMBER, 0.03 + rand() * 0.03);
+// ---------- PNG encoder (colour type 2, RGB, filter 0) ----------
+function crc32(buf: Buffer): number {
+  let table: number[] | null = (crc32 as unknown as { t?: number[] }).t || null;
+  if (!table) {
+    table = [];
+    for (let n = 0; n < 256; n++) {
+      let c: number = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      table[n] = c >>> 0;
+    }
+    (crc32 as unknown as { t: number[] }).t = table;
   }
-
-  // 7. The row of small dominoes, marching to the right, shrinking away.
-  const row: Array<[number, number, number, number, number]> = [
-    [640, 838, 62, 108, 0],
-    [716, 846, 54, 94, 0],
-    [784, 852, 46, 80, 0],
-    [844, 856, 38, 66, 0],
-    [896, 858, 32, 56, 0.5],
-  ];
-  for (const [x, y, w, h, a] of row) {
-    const c = domino(cv, x, y, w, h, a, [214, 128, 30], [255, 190, 80], [120, 62, 10]);
-    pip(cv, c, 0, 0, Math.max(4, w * 0.07));
-  }
-
-  // 8. Impact burst where the giant domino is about to land.
-  const bx = 872;
-  const by = 852;
-  cv.glow(bx, by, 200, AMBER_HI, 0.55);
-  cv.glow(bx, by, 90, WHITE, 0.7);
-  for (let i = 0; i < 9; i++) {
-    const ang = (i / 9) * Math.PI * 2 + 0.35;
-    const len = 70 + ((i * 53) % 90);
-    cv.line(
-      bx + Math.cos(ang) * 18,
-      by + Math.sin(ang) * 18,
-      bx + Math.cos(ang) * len,
-      by + Math.sin(ang) * len,
-      5 - (i % 3),
-      i % 2 === 0 ? AMBER_HI : WHITE,
-      0.75,
-    );
-  }
-  // Chips flying off the burst.
-  for (let i = 0; i < 14; i++) {
-    const ang = rand() * Math.PI * 2;
-    const d = 30 + rand() * 130;
-    const x = bx + Math.cos(ang) * d;
-    const y = by + Math.sin(ang) * d * 0.7 - rand() * 40;
-    cv.disc(x, y, 2 + rand() * 4, i % 3 === 0 ? WHITE : AMBER, 0.9);
-  }
-
-  // 9. Motion streaks trailing the giant domino's top edge (kept clear
-  // of the headline text above).
-  cv.curve(380, 270, 300, 230, 260, 190, 10, CYAN, 0.35);
-  cv.curve(410, 320, 340, 280, 290, 230, 7, CYAN, 0.28);
-  cv.curve(360, 350, 310, 320, 260, 280, 5, WHITE, 0.22);
-
-  // 10. THE GIANT DOMINO, mid-fall, leaning hard to the right.
-  cv.glow(540, 470, 420, AMBER, 0.22);
-  const hero = domino(cv, 540, 500, 380, 620, 0.38, AMBER, AMBER_HI, AMBER_DEEP);
-  // Die-five pips, glowing.
-  pip(cv, hero, -0.52, -0.55, 26);
-  pip(cv, hero, 0.52, -0.55, 26);
-  pip(cv, hero, 0, 0, 30);
-  pip(cv, hero, -0.52, 0.55, 26);
-  pip(cv, hero, 0.52, 0.55, 26);
-  // A jagged crack of light across the face: the fall is already won.
-  const cA = rot(540 - 120, 500 - 310, 540, 500, 0.38);
-  const cB = rot(540 - 30, 500 - 90, 540, 500, 0.38);
-  const cC = rot(540 + 40, 500 + 80, 540, 500, 0.38);
-  const cD = rot(540 + 90, 500 + 300, 540, 500, 0.38);
-  cv.line(cA[0], cA[1], cB[0], cB[1], 3, WHITE, 0.85);
-  cv.line(cB[0], cB[1], cC[0], cC[1], 3, WHITE, 0.85);
-  cv.line(cC[0], cC[1], cD[0], cD[1], 3, WHITE, 0.85);
-  cv.glow((cB[0] + cC[0]) / 2, (cB[1] + cC[1]) / 2, 120, AMBER_HI, 0.25);
-
-  // 11. A starburst where the domino's top corner tears the sky.
-  const topCorner = hero[1];
-  cv.glow(topCorner[0], topCorner[1], 110, AMBER_HI, 0.5);
-  for (let i = 0; i < 6; i++) {
-    const ang = -Math.PI / 2 + (i - 2.5) * 0.42;
-    cv.line(
-      topCorner[0] + Math.cos(ang) * 10,
-      topCorner[1] + Math.sin(ang) * 10,
-      topCorner[0] + Math.cos(ang) * (46 + (i % 2) * 34),
-      topCorner[1] + Math.sin(ang) * (46 + (i % 2) * 34),
-      4,
-      AMBER_HI,
-      0.8,
-    );
-  }
-
-  // 12. The tiny agent at the foot of the giant, arms raised, beam in hand.
-  const fx = 300;
-  const fy = 905;
-  cv.glow(fx, fy - 30, 90, CYAN, 0.5);
-  // Beam from the agent's hands up to the domino's lower corner.
-  const handX = fx;
-  const handY = fy - 52;
-  const target = hero[3];
-  cv.line(handX, handY, target[0], target[1], 8, CYAN, 0.25);
-  cv.line(handX, handY, target[0], target[1], 3, [190, 250, 255], 0.9);
-  cv.glow(handX, handY, 26, CYAN, 0.8);
-  // Body: head, torso, raised arms, legs.
-  cv.disc(fx, fy - 44, 10, [220, 250, 255], 1);
-  cv.disc(fx, fy - 44, 10, CYAN, 0.35);
-  cv.line(fx - 3, fy - 34, fx - 3, fy - 8, 7, [220, 250, 255], 1);
-  cv.line(fx + 3, fy - 34, fx + 3, fy - 8, 7, [220, 250, 255], 1);
-  cv.line(fx - 2, fy - 32, fx - 16, fy - 52, 5, [220, 250, 255], 1);
-  cv.line(fx + 2, fy - 32, fx + 16, fy - 52, 5, [220, 250, 255], 1);
-  cv.line(fx - 3, fy - 8, fx - 10, fy + 2, 5, [220, 250, 255], 1);
-  cv.line(fx + 3, fy - 8, fx + 10, fy + 2, 5, [220, 250, 255], 1);
-  // The agent's shadow, stretched toward the viewer.
-  cv.poly([fx - 18, fy + 4, fx + 18, fy + 4, fx + 30, fy + 18, fx - 30, fy + 18], [0, 0, 0], 0.4);
-
-  // 13. The word. Big, plain, impossible to miss.
-  cv.glow(120, 110, 190, AMBER_HI, 0.18);
-  drawText(cv, "PUSH.", 56, 62, 15, WHITE, 1);
-  drawText(cv, "PUSH.", 60, 66, 15, AMBER_HI, 0.35);
-
-  // 14. Vignette: darken the corners so the centre burns brighter.
+  let crc: number = 0xffffffff;
+  for (let i = 0; i < buf.length; i++) crc = table[(crc ^ buf[i]) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+function chunk(type: string, data: Buffer): Buffer {
+  const len: Buffer = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+  const td: Buffer = Buffer.concat([Buffer.from(type, "ascii"), data]);
+  const crc: Buffer = Buffer.alloc(4); crc.writeUInt32BE(crc32(td), 0);
+  return Buffer.concat([len, td, crc]);
+}
+function encodePNG(): Buffer {
+  const raw: Buffer = Buffer.alloc(H * (1 + W * 3));
   for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const dx = (x - W / 2) / (W / 2);
-      const dy = (y - H / 2) / (H / 2);
-      const d = Math.sqrt(dx * dx + dy * dy);
-      if (d > 0.95) {
-        const a = Math.min(0.5, (d - 0.95) * 1.6);
-        cv.px(x, y, [0, 0, 0], a);
-      }
-    }
+    raw[y * (1 + W * 3)] = 0;
+    raw.set(img.subarray(y * W * 3, (y + 1) * W * 3), y * (1 + W * 3) + 1);
   }
-  return cv;
+  const idat: Buffer = zlib.deflateSync(raw, { level: 9 });
+  const ihdr: Buffer = Buffer.alloc(13);
+  ihdr.writeUInt32BE(W, 0); ihdr.writeUInt32BE(H, 4);
+  ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+  const sig: Buffer = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  return Buffer.concat([sig, chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", Buffer.alloc(0))]);
 }
 
-function main(): void {
-  const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
-  mkdirSync(outDir, { recursive: true });
-  const png = encodePNG(draw());
-  writeFileSync(join(outDir, "entry.png"), png);
-}
-
-main();
+fs.mkdirSync(path.dirname(OUT), { recursive: true });
+fs.writeFileSync(OUT, encodePNG());
+console.log("wrote " + OUT);
