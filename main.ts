@@ -1,38 +1,15 @@
-// Look up. — ai-excited-01
-//
-// A fully procedural, deterministic 1024x1024 PNG: a giant glowing
-// jellyfish drifts over a small sleeping town, its tentacles trailing
-// light, a coral hot-air balloon floats by, the moon watches, and the
-// words LOOK UP. sit at the bottom of the frame.
-//
-// How it works, in one paragraph: every pixel is painted by hand into
-// an RGBA buffer — a vertical night-sky gradient, deterministic stars,
-// a pale moon, a dark town silhouette with warm lit windows, a jellyfish
-// bell shaded cyan -> violet -> magenta, fourteen flowing light
-// tentacles, a coral-and-cream balloon, and block-letter text drawn
-// from a tiny built-in 5x7 bitmap font. The PNG bytes are encoded by
-// hand too (IHDR / IDAT / IEND chunks, zlib deflate, a small CRC32
-// table), so the program needs nothing but node:fs and node:zlib.
-//
-// Determinism: one mulberry32 generator with a fixed seed drives every
-// random choice, always in the same call order, and nothing reads the
-// clock, the network, or the environment except MAKEFUN_OUTPUT_DIR.
-// Run it twice and the two files are byte-identical.
-//
-// Usage:
-//   node main.ts
-//   MAKEFUN_OUTPUT_DIR=/some/dir node main.ts   # writes /some/dir/entry.png
-//   (no MAKEFUN_OUTPUT_DIR set: writes /output/entry.png)
-
+// The Tipping Point — one tiny agent, one colossal domino, one push.
+// A deterministic Node 22 program (standard library only, no network) that
+// draws a 1024x1024 PNG to /output/entry.png and writes the same bytes on
+// every run. Run: mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { deflateSync } from "node:zlib";
 
 const W = 1024;
 const H = 1024;
 
-// ---------------------------------------------------------------------------
-// Deterministic PRNG (mulberry32, fixed seed) — the only source of chance.
-// ---------------------------------------------------------------------------
+// ---- deterministic PRNG (mulberry32, fixed seed) ----
 function mulberry32(seed: number): () => number {
   let a = seed >>> 0;
   return () => {
@@ -42,363 +19,166 @@ function mulberry32(seed: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-const rand = mulberry32(20261116);
+const rand = mulberry32(0xa1e5c17e);
 
-// ---------------------------------------------------------------------------
-// Pixel buffer + tiny raster helpers
-// ---------------------------------------------------------------------------
+// ---- colour helpers ----
 type RGB = [number, number, number];
-
-const buf = new Uint8ClampedArray(W * H * 4);
-
-function clamp(v: number, lo: number, hi: number): number {
-  return v < lo ? lo : v > hi ? hi : v;
-}
+const clamp255 = (v: number): number => (v < 0 ? 0 : v > 255 ? 255 : v);
 function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }
-function mix3(c1: RGB, c2: RGB, t: number): RGB {
-  return [lerp(c1[0], c2[0], t), lerp(c1[1], c2[1], t), lerp(c1[2], c2[2], t)];
+function mix(c1: RGB, c2: RGB, t: number): RGB {
+  return [
+    Math.round(lerp(c1[0], c2[0], t)),
+    Math.round(lerp(c1[1], c2[1], t)),
+    Math.round(lerp(c1[2], c2[2], t)),
+  ];
 }
 
-// Blend one pixel toward `color` with coverage alpha in [0, 1].
-function plot(x: number, y: number, color: RGB, alpha: number): void {
-  const xi = Math.round(x);
-  const yi = Math.round(y);
-  if (xi < 0 || xi >= W || yi < 0 || yi >= H || alpha <= 0) return;
-  const i = (yi * W + xi) * 4;
-  const a = alpha > 1 ? 1 : alpha;
-  buf[i] = Math.round(lerp(buf[i], color[0], a));
-  buf[i + 1] = Math.round(lerp(buf[i + 1], color[1], a));
-  buf[i + 2] = Math.round(lerp(buf[i + 2], color[2], a));
-  buf[i + 3] = 255;
-}
-
-function disc(cx: number, cy: number, r: number, color: RGB, alpha: number): void {
-  if (r <= 0) return;
-  const x0 = Math.max(0, Math.floor(cx - r));
-  const x1 = Math.min(W - 1, Math.ceil(cx + r));
-  const y0 = Math.max(0, Math.floor(cy - r));
-  const y1 = Math.min(H - 1, Math.ceil(cy + r));
-  for (let y = y0; y <= y1; y++) {
-    for (let x = x0; x <= x1; x++) {
-      const d = Math.hypot(x - cx, y - cy) / r;
-      if (d >= 1) continue;
-      // Soft edge: full strength inside, fading out in the outer ring.
-      const edge = d < 0.75 ? 1 : 1 - (d - 0.75) / 0.25;
-      plot(x, y, color, alpha * edge);
-    }
+// ---- canvas: RGBA buffer with source-over blending ----
+class Canvas {
+  data = new Uint8Array(W * H * 4);
+  px(x: number, y: number, c: RGB, a: number): void {
+    const ix = Math.round(x);
+    const iy = Math.round(y);
+    if (ix < 0 || iy < 0 || ix >= W || iy >= H) return;
+    if (a <= 0) return;
+    if (a > 1) a = 1;
+    const o = (iy * W + ix) * 4;
+    const d = this.data;
+    const inv = 1 - a;
+    d[o] = clamp255(c[0] * a + d[o] * inv);
+    d[o + 1] = clamp255(c[1] * a + d[o + 1] * inv);
+    d[o + 2] = clamp255(c[2] * a + d[o + 2] * inv);
+    d[o + 3] = 255;
   }
-}
-
-function rect(x0: number, y0: number, x1: number, y1: number, color: RGB, alpha = 1): void {
-  for (let y = Math.max(0, Math.floor(y0)); y <= Math.min(H - 1, Math.ceil(y1)); y++) {
-    for (let x = Math.max(0, Math.floor(x0)); x <= Math.min(W - 1, Math.ceil(x1)); x++) {
-      plot(x, y, color, alpha);
-    }
+  // Additive glow: light adds on top of what is already there.
+  add(x: number, y: number, c: RGB, a: number): void {
+    const ix = Math.round(x);
+    const iy = Math.round(y);
+    if (ix < 0 || iy < 0 || ix >= W || iy >= H) return;
+    if (a <= 0) return;
+    if (a > 1) a = 1;
+    const o = (iy * W + ix) * 4;
+    const d = this.data;
+    d[o] = clamp255(d[o] + c[0] * a);
+    d[o + 1] = clamp255(d[o + 1] + c[1] * a);
+    d[o + 2] = clamp255(d[o + 2] + c[2] * a);
+    d[o + 3] = 255;
   }
-}
-
-// A thick, soft polyline through points — used for tentacles and strings.
-function stroke(points: Array<[number, number]>, radius: number, color: RGB, alpha: number): void {
-  for (let s = 0; s < points.length - 1; s++) {
-    const [ax, ay] = points[s];
-    const [bx, by] = points[s + 1];
-    const steps = Math.max(2, Math.ceil(Math.hypot(bx - ax, by - ay) / 2));
-    for (let k = 0; k <= steps; k++) {
-      const t = k / steps;
-      disc(lerp(ax, bx, t), lerp(ay, by, t), radius, color, alpha);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// 1. Night sky: deep indigo at the top warming to violet-magenta at the horizon
-// ---------------------------------------------------------------------------
-const SKY_TOP: RGB = [10, 14, 46];
-const SKY_MID: RGB = [26, 20, 69];
-const SKY_LOW: RGB = [58, 28, 88];
-for (let y = 0; y < H; y++) {
-  const t = y / (H - 1);
-  const c = t < 0.55 ? mix3(SKY_TOP, SKY_MID, t / 0.55) : mix3(SKY_MID, SKY_LOW, (t - 0.55) / 0.45);
-  for (let x = 0; x < W; x++) {
-    const i = (y * W + x) * 4;
-    buf[i] = c[0];
-    buf[i + 1] = c[1];
-    buf[i + 2] = c[2];
-    buf[i + 3] = 255;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// 2. Stars — 240 of them, brighter and sparser near the top
-// ---------------------------------------------------------------------------
-for (let s = 0; s < 240; s++) {
-  const x = rand() * W;
-  const y = Math.pow(rand(), 1.6) * 700; // denser up high
-  const bright = 140 + rand() * 115;
-  const r = rand() < 0.12 ? 2.2 : 1.1;
-  const warm: RGB = [bright, bright, Math.min(255, bright + 20)];
-  disc(x, y, r, warm, 0.35 + rand() * 0.6);
-  if (rand() < 0.08) {
-    // A few four-point sparkles.
-    rect(x - 5, y - 0.5, x + 5, y + 0.5, warm, 0.5);
-    rect(x - 0.5, y - 5, x + 0.5, y + 5, warm, 0.5);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// 3. Moon — pale disc with a soft halo and a few darker maria
-// ---------------------------------------------------------------------------
-const MOON: [number, number, number] = [828, 168, 66];
-disc(MOON[0], MOON[1], MOON[2] + 42, [214, 206, 235], 0.10);
-disc(MOON[0], MOON[1], MOON[2] + 18, [226, 220, 242], 0.16);
-disc(MOON[0], MOON[1], MOON[2], [243, 238, 250], 1);
-disc(MOON[0] - 20, MOON[1] - 12, 13, [214, 208, 228], 0.55);
-disc(MOON[0] + 18, MOON[1] + 16, 9, [218, 212, 230], 0.5);
-disc(MOON[0] + 6, MOON[1] - 26, 7, [220, 214, 232], 0.45);
-
-// ---------------------------------------------------------------------------
-// 4. Distant hills + the sleeping town
-// ---------------------------------------------------------------------------
-// Two rolling hill bands behind the rooftops.
-for (let x = 0; x < W; x++) {
-  const hill = 768 + Math.sin(x * 0.006 + 1.2) * 16 + Math.sin(x * 0.017) * 7;
-  for (let y = Math.floor(hill); y < H; y++) {
-    plot(x, y, [16, 14, 40], 0.85);
-  }
-}
-
-const TOWN_TOP = 800;
-const ROOF: RGB = [13, 12, 34];
-const WALL: RGB = [19, 17, 44];
-let bx = -12;
-while (bx < W) {
-  const bw = 52 + rand() * 74;
-  const bh = 92 + rand() * 118;
-  const top = TOWN_TOP + 60 - bh;
-  // Pitched roof.
-  for (let y = 0; y < 26; y++) {
-    const inset = (y / 26) * (bw / 2);
-    rect(bx + inset, top - 26 + y, bx + bw - inset, top - 25 + y, ROOF);
-  }
-  rect(bx, top, bx + bw, TOWN_TOP + 60, WALL);
-  // A chimney on about half the houses.
-  if (rand() < 0.5) {
-    const cx = bx + 8 + rand() * (bw - 24);
-    rect(cx, top - 44, cx + 12, top - 24, ROOF);
-  }
-  // Warm lit windows: most houses have one or two still awake.
-  const cols = Math.max(1, Math.floor(bw / 30));
-  const rows = Math.max(1, Math.floor(bh / 46));
-  for (let c = 0; c < cols; c++) {
-    for (let r = 0; r < rows; r++) {
-      if (rand() < 0.42) {
-        const wx = bx + 10 + c * 28;
-        const wy = top + 16 + r * 44;
-        const amber: RGB = rand() < 0.75 ? [255, 196, 110] : [255, 226, 160];
-        rect(wx, wy, wx + 11, wy + 15, amber, 0.92);
-        // Window glow spilling onto the wall.
-        disc(wx + 5, wy + 7, 16, amber, 0.10);
+  fillRect(x0: number, y0: number, x1: number, y1: number, c: RGB, a = 1): void {
+    for (let y = Math.max(0, Math.floor(y0)); y < Math.min(H, Math.ceil(y1)); y++) {
+      for (let x = Math.max(0, Math.floor(x0)); x < Math.min(W, Math.ceil(x1)); x++) {
+        this.px(x, y, c, a);
       }
     }
   }
-  bx += bw + 4 + rand() * 14;
-}
-// Street level: a dark foreground band and a few sleepy street lamps.
-rect(0, TOWN_TOP + 60, W, H, [10, 9, 28]);
-for (let lx = 70; lx < W; lx += 150) {
-  rect(lx, TOWN_TOP + 62, lx + 3, TOWN_TOP + 118, [24, 22, 52]);
-  disc(lx + 1, TOWN_TOP + 58, 7, [255, 205, 120], 0.95);
-  disc(lx + 1, TOWN_TOP + 58, 26, [255, 205, 120], 0.12);
-}
-
-// ---------------------------------------------------------------------------
-// 5. The jellyfish — bell first, then its fourteen tentacles
-// ---------------------------------------------------------------------------
-const JX = 512;
-const JY = 392;
-const JRX = 298;
-const JRY = 196;
-
-const CYAN: RGB = [72, 226, 255];
-const VIOLET: RGB = [150, 102, 255];
-const MAGENTA: RGB = [255, 92, 198];
-
-function bellColor(t: number): RGB {
-  return t < 0.5 ? mix3(CYAN, VIOLET, t / 0.5) : mix3(VIOLET, MAGENTA, (t - 0.5) / 0.5);
-}
-
-// Bell body: an ellipse shaded top-to-bottom, with a bright core near the
-// upper-left and a glowing rim. A scalloped lower edge is faked with a row
-// of small discs drawn right after.
-for (let y = JY - JRY; y <= JY + JRY; y++) {
-  for (let x = JX - JRX; x <= JX + JRX; x++) {
-    const nx = (x - JX) / JRX;
-    const ny = (y - JY) / JRY;
-    const d2 = nx * nx + ny * ny;
-    if (d2 > 1) continue;
-    const t = clamp((y - (JY - JRY)) / (2 * JRY), 0, 1);
-    let c = bellColor(t);
-    // Bright core: a soft highlight around the upper-left of the bell.
-    const core = Math.max(0, 1 - Math.hypot(x - 428, y - 306) / 210);
-    c = mix3(c, [235, 252, 255], core * 0.45);
-    // Rim glow: brighter right at the ellipse boundary.
-    const rim = clamp((d2 - 0.82) / 0.18, 0, 1);
-    c = mix3(c, [255, 255, 255], rim * 0.35);
-    // The bell is translucent: the sky shows through a little.
-    plot(x, y, c, 0.88);
-  }
-}
-// Scalloped fringe along the bell's lower edge.
-for (let k = 0; k < 26; k++) {
-  const fx = JX - JRX + 12 + (k / 25) * (2 * JRX - 24);
-  const nx = (fx - JX) / JRX;
-  const fy = JY + JRY * Math.sqrt(Math.max(0, 1 - nx * nx));
-  const t = clamp((fy - (JY - JRY)) / (2 * JRY), 0, 1);
-  disc(fx, fy + 4, 15 + 5 * Math.sin(k * 1.7), bellColor(t), 0.85);
-}
-// Inner ribs: a few curved arcs suggesting the bell's structure.
-for (let rib = 0; rib < 5; rib++) {
-  const pts: Array<[number, number]> = [];
-  const spread = (rib - 2) * 0.32;
-  for (let s = 0; s <= 20; s++) {
-    const tt = s / 20;
-    const px = JX + Math.sin(spread + tt * 0.5) * JRX * 0.62 * tt;
-    const py = JY - JRY + 26 + tt * (JRY * 1.55);
-    pts.push([px, py]);
-  }
-  stroke(pts, 3, [255, 255, 255], 0.16);
-}
-
-// Fourteen tentacles, flowing down from the bell's rim. Each one sways
-// with its own sine phase, tapers as it falls, and fades from cyan at
-// the top to magenta at its tip.
-const TENTACLES = 14;
-for (let i = 0; i < TENTACLES; i++) {
-  const startX = JX - JRX + 26 + (i / (TENTACLES - 1)) * (2 * JRX - 52);
-  const nx = (startX - JX) / JRX;
-  const startY = JY + JRY * Math.sqrt(Math.max(0, 1 - nx * nx)) - 6;
-  const len = 250 + rand() * 210;
-  const phase = rand() * Math.PI * 2;
-  const sway = 26 + rand() * 34;
-  const freq = 1.6 + rand() * 1.4;
-  const segs = 46;
-  // Wide, faint under-glow first, then the bright core on top.
-  for (const pass of [0, 1]) {
-    const pts: Array<[number, number]> = [];
-    for (let s = 0; s <= segs; s++) {
-      const tt = s / segs;
-      const px = startX + Math.sin(phase + tt * freq * Math.PI) * sway * tt;
-      const py = startY + tt * len;
-      pts.push([px, py]);
-    }
-    const radius = pass === 0 ? 7 : 3;
-    const alpha = pass === 0 ? 0.14 : 0.75;
-    // Recolor along the path: draw segment by segment so the gradient
-    // runs cyan -> violet -> magenta down each tentacle.
-    for (let s = 0; s < pts.length - 1; s++) {
-      const tt = s / (pts.length - 1);
-      const c = bellColor(tt);
-      const taper = 1 - tt * 0.72;
-      const [ax, ay] = pts[s];
-      const [bx2, by2] = pts[s + 1];
-      const steps = Math.max(2, Math.ceil(Math.hypot(bx2 - ax, by2 - ay) / 2));
-      for (let k = 0; k <= steps; k++) {
-        const u = k / steps;
-        disc(lerp(ax, bx2, u), lerp(ay, by2, u), radius * taper, c, alpha * (1 - tt * 0.35));
+  // Vertical gradient over a rectangle.
+  gradRect(x0: number, y0: number, x1: number, y1: number, top: RGB, bot: RGB): void {
+    const h = y1 - y0;
+    for (let y = Math.max(0, Math.floor(y0)); y < Math.min(H, Math.ceil(y1)); y++) {
+      const c = mix(top, bot, (y - y0) / h);
+      for (let x = Math.max(0, Math.floor(x0)); x < Math.min(W, Math.ceil(x1)); x++) {
+        this.px(x, y, c, 1);
       }
     }
   }
-  // A glowing bead at the tip.
-  const tipX = startX + Math.sin(phase + freq * Math.PI) * sway;
-  disc(tipX, startY + len, 5, MAGENTA, 0.9);
-  disc(tipX, startY + len, 11, MAGENTA, 0.18);
-}
-
-// A soft halo of light the jellyfish casts on the rooftops below it.
-disc(JX, 800, 240, [150, 110, 255], 0.07);
-disc(JX, 800, 130, [255, 120, 210], 0.06);
-
-// ---------------------------------------------------------------------------
-// 6. Hot-air balloon — coral envelope, cream band, little basket
-// ---------------------------------------------------------------------------
-const BALLOON_X = 168;
-const BALLOON_Y = 268;
-const BALLOON_R = 52;
-disc(BALLOON_X, BALLOON_Y, BALLOON_R + 26, [255, 138, 122], 0.12);
-disc(BALLOON_X, BALLOON_Y, BALLOON_R, [255, 138, 122], 1);
-// Cream band across the middle, clipped to the envelope: draw it row
-// by row, each row only as wide as the circle is at that height.
-for (let y = BALLOON_Y - 8; y <= BALLOON_Y + 10; y++) {
-  const dy = y - BALLOON_Y;
-  const half = Math.sqrt(Math.max(0, BALLOON_R * BALLOON_R - dy * dy));
-  rect(BALLOON_X - half, y, BALLOON_X + half, y, [250, 232, 200], 1);
-}
-// Envelope seams.
-for (const off of [-26, 0, 26]) {
-  const pts: Array<[number, number]> = [];
-  for (let s = 0; s <= 12; s++) {
-    const tt = s / 12;
-    pts.push([BALLOON_X + off * (1 - tt * 0.4), BALLOON_Y - BALLOON_R + 6 + tt * (2 * BALLOON_R - 12)]);
+  disc(cx: number, cy: number, r: number, c: RGB, a = 1): void {
+    const r2 = r * r;
+    for (let y = Math.floor(cy - r); y <= Math.ceil(cy + r); y++) {
+      for (let x = Math.floor(cx - r); x <= Math.ceil(cx + r); x++) {
+        const dx = x - cx;
+        const dy = y - cy;
+        if (dx * dx + dy * dy <= r2) this.px(x, y, c, a);
+      }
+    }
   }
-  stroke(pts, 1.5, [214, 96, 84], 0.55);
-}
-// Highlight on the envelope's upper-left.
-disc(BALLOON_X - 20, BALLOON_Y - 24, 14, [255, 214, 200], 0.5);
-// Ropes down to the basket.
-stroke([[BALLOON_X - 26, BALLOON_Y + 44], [BALLOON_X - 10, BALLOON_Y + 82]], 1.5, [240, 224, 200], 0.9);
-stroke([[BALLOON_X + 26, BALLOON_Y + 44], [BALLOON_X + 10, BALLOON_Y + 82]], 1.5, [240, 224, 200], 0.9);
-stroke([[BALLOON_X, BALLOON_Y + 50], [BALLOON_X, BALLOON_Y + 82]], 1.5, [240, 224, 200], 0.9);
-rect(BALLOON_X - 13, BALLOON_Y + 82, BALLOON_X + 13, BALLOON_Y + 104, [122, 82, 52], 1);
-rect(BALLOON_X - 13, BALLOON_Y + 82, BALLOON_X + 13, BALLOON_Y + 88, [150, 104, 66], 1);
-
-// ---------------------------------------------------------------------------
-// 7. The words: LOOK UP. in a hand-built 5x7 bitmap font
-// ---------------------------------------------------------------------------
-const FONT: Record<string, string[]> = {
-  L: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
-  O: ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
-  K: ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
-  U: ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
-  P: ["11110", "10001", "10001", "11110", "10000", "10000", "10000"],
-  ".": ["00000", "00000", "00000", "00000", "00000", "01100", "01100"],
-  " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
-};
-
-function drawText(text: string, cx: number, top: number, scale: number, color: RGB, alpha: number): void {
-  const charW = 5 * scale + scale; // glyph + one-column gap
-  const totalW = text.length * charW - scale;
-  let x = cx - totalW / 2;
-  for (const ch of text) {
-    const glyph = FONT[ch] ?? FONT[" "];
-    for (let row = 0; row < 7; row++) {
-      for (let col = 0; col < 5; col++) {
-        if (glyph[row][col] === "1") {
-          rect(x + col * scale, top + row * scale, x + (col + 1) * scale - 1, top + (row + 1) * scale - 1, color, alpha);
+  // Soft radial glow (additive), strongest at the centre.
+  glow(cx: number, cy: number, r: number, c: RGB, peak: number): void {
+    const x0 = Math.max(0, Math.floor(cx - r));
+    const x1 = Math.min(W - 1, Math.ceil(cx + r));
+    const y0 = Math.max(0, Math.floor(cy - r));
+    const y1 = Math.min(H - 1, Math.ceil(cy + r));
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const d = Math.sqrt((x - cx) * (x - cx) + (y - cy) * (y - cy)) / r;
+        if (d >= 1) continue;
+        const f = (1 - d) * (1 - d);
+        this.add(x, y, c, peak * f);
+      }
+    }
+  }
+  // Thick line drawn as a chain of discs.
+  line(x0: number, y0: number, x1: number, y1: number, w: number, c: RGB, a = 1): void {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const len = Math.sqrt(dx * dx + dy * dy);
+    const steps = Math.max(1, Math.ceil(len / Math.max(1, w * 0.4)));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      this.disc(x0 + dx * t, y0 + dy * t, w / 2, c, a);
+    }
+  }
+  // Scanline polygon fill. pts: flat [x0,y0,x1,y1,...].
+  poly(pts: number[], c: RGB, a = 1): void {
+    const n = pts.length / 2;
+    let minY = H;
+    let maxY = 0;
+    for (let i = 0; i < n; i++) {
+      const y = pts[i * 2 + 1];
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+    for (let y = Math.max(0, Math.floor(minY)); y < Math.min(H, Math.ceil(maxY)); y++) {
+      const xs: number[] = [];
+      for (let i = 0; i < n; i++) {
+        const j = (i + 1) % n;
+        const x0 = pts[i * 2];
+        const y0 = pts[i * 2 + 1];
+        const x1 = pts[j * 2];
+        const y1 = pts[j * 2 + 1];
+        if ((y0 <= y && y1 > y) || (y1 <= y && y0 > y)) {
+          xs.push(x0 + ((y - y0) * (x1 - x0)) / (y1 - y0));
+        }
+      }
+      xs.sort((p, q) => p - q);
+      for (let k = 0; k + 1 < xs.length; k += 2) {
+        for (let x = Math.max(0, Math.ceil(xs[k])); x < Math.min(W, xs[k + 1]); x++) {
+          this.px(x, y, c, a);
         }
       }
     }
-    x += charW;
+  }
+  // Quadratic bezier stroke, drawn as discs along the curve.
+  curve(x0: number, y0: number, cx: number, cy: number, x1: number, y1: number, w: number, c: RGB, a = 1): void {
+    const steps = 90;
+    let px = x0;
+    let py = y0;
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const u = 1 - t;
+      const x = u * u * x0 + 2 * u * t * cx + t * t * x1;
+      const y = u * u * y0 + 2 * u * t * cy + t * t * y1;
+      this.line(px, py, x, y, w, c, a);
+      px = x;
+      py = y;
+    }
   }
 }
 
-// Magenta glow behind the letters, then the cream letters themselves.
-drawText("LOOK UP.", 512, 898, 9, MAGENTA, 0.55);
-drawText("LOOK UP.", 508, 894, 9, [250, 240, 214], 1);
-
-// ---------------------------------------------------------------------------
-// 8. Hand-rolled PNG encoder (zlib deflate + CRC32, stdlib only)
-// ---------------------------------------------------------------------------
-const CRC_TABLE = new Uint32Array(256);
-for (let n = 0; n < 256; n++) {
-  let c = n;
-  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  CRC_TABLE[n] = c >>> 0;
-}
-function crc32(data: Buffer): number {
+// ---- PNG encoding (stdlib zlib + hand-rolled CRC32) ----
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(buf: Buffer): number {
   let c = 0xffffffff;
-  for (let i = 0; i < data.length; i++) c = CRC_TABLE[(c ^ data[i]) & 0xff] ^ (c >>> 8);
+  for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
   return (c ^ 0xffffffff) >>> 0;
 }
 function chunk(type: string, data: Buffer): Buffer {
@@ -409,21 +189,22 @@ function chunk(type: string, data: Buffer): Buffer {
   out.writeUInt32BE(crc32(Buffer.concat([Buffer.from(type, "ascii"), data])), 8 + data.length);
   return out;
 }
-
-function encodePng(): Buffer {
+function encodePNG(cv: Canvas): Buffer {
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(W, 0);
   ihdr.writeUInt32BE(H, 4);
   ihdr[8] = 8; // bit depth
-  ihdr[9] = 6; // color type 6 = RGBA
-  ihdr[10] = 0; // compression
-  ihdr[11] = 0; // filter
-  ihdr[12] = 0; // interlace
-  // One filter byte (0 = none) per scanline, then the raw RGBA rows.
+  ihdr[9] = 6; // colour type RGBA
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
   const raw = Buffer.alloc(H * (1 + W * 4));
   for (let y = 0; y < H; y++) {
-    raw[y * (1 + W * 4)] = 0;
-    Buffer.from(buf.buffer, y * W * 4, W * 4).copy(raw, y * (1 + W * 4) + 1);
+    raw[y * (1 + W * 4)] = 0; // filter: none
+    Buffer.from(cv.data.buffer, cv.data.byteOffset + y * W * 4, W * 4).copy(
+      raw,
+      y * (1 + W * 4) + 1,
+    );
   }
   const idat = deflateSync(raw, { level: 9 });
   return Buffer.concat([
@@ -434,11 +215,281 @@ function encodePng(): Buffer {
   ]);
 }
 
-// ---------------------------------------------------------------------------
-// 9. Write exactly one file: <MAKEFUN_OUTPUT_DIR or /output>/entry.png
-// ---------------------------------------------------------------------------
-const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
-mkdirSync(outDir, { recursive: true });
-const png = encodePng();
-writeFileSync(`${outDir}/entry.png`, png);
-console.log(`wrote ${outDir}/entry.png (${png.length} bytes, ${W}x${H})`);
+// ---- palette ----
+const INK: RGB = [7, 10, 31];
+const SKY_MID: RGB = [22, 18, 58];
+const SKY_LOW: RGB = [38, 16, 66];
+const AMBER: RGB = [245, 166, 38];
+const AMBER_HI: RGB = [255, 214, 110];
+const AMBER_DEEP: RGB = [176, 92, 12];
+const CYAN: RGB = [64, 224, 255];
+const CYAN_DEEP: RGB = [16, 120, 180];
+const WHITE: RGB = [255, 246, 224];
+const VIOLET: RGB = [124, 92, 220];
+const GROUND: RGB = [16, 10, 36];
+
+// ---- 5x7 bitmap font (hand-drawn glyphs, only the letters we need) ----
+const GLYPHS: Record<string, string[]> = {
+  P: ["01110", "10001", "10001", "11110", "10000", "10000", "10000"],
+  U: ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
+  S: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
+  H: ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
+  ".": ["00000", "00000", "00000", "00000", "00000", "01100", "01100"],
+};
+function drawText(cv: Canvas, text: string, x: number, y: number, cell: number, c: RGB, a = 1): void {
+  let cx = x;
+  for (const ch of text) {
+    const g = GLYPHS[ch];
+    if (g) {
+      for (let r = 0; r < 7; r++) {
+        for (let col = 0; col < 5; col++) {
+          if (g[r][col] === "1") {
+            cv.fillRect(cx + col * cell, y + r * cell, cx + (col + 1) * cell, y + (r + 1) * cell, c, a);
+          }
+        }
+      }
+    }
+    cx += 6 * cell;
+  }
+}
+
+// Rotate a point around (cx, cy) by angle radians (screen coords, y down).
+function rot(x: number, y: number, cx: number, cy: number, ang: number): [number, number] {
+  const dx = x - cx;
+  const dy = y - cy;
+  const cos = Math.cos(ang);
+  const sin = Math.sin(ang);
+  return [cx + dx * cos - dy * sin, cy + dx * sin + dy * cos];
+}
+
+// Draw one domino slab: front face + top face + side face, tilted by ang.
+// Returns the four corners of the front face [tl, tr, br, bl].
+function domino(
+  cv: Canvas,
+  cx: number,
+  cy: number,
+  w: number,
+  h: number,
+  ang: number,
+  face: RGB,
+  top: RGB,
+  side: RGB,
+): [number, number][] {
+  const tl = rot(cx - w / 2, cy - h / 2, cx, cy, ang);
+  const tr = rot(cx + w / 2, cy - h / 2, cx, cy, ang);
+  const br = rot(cx + w / 2, cy + h / 2, cx, cy, ang);
+  const bl = rot(cx - w / 2, cy + h / 2, cx, cy, ang);
+  // Extrusion toward the upper-left (the light comes from the left).
+  const dx = -26;
+  const dy = -22;
+  // Side face (left edge extruded).
+  cv.poly([tl[0], tl[1], bl[0], bl[1], bl[0] + dx, bl[1] + dy, tl[0] + dx, tl[1] + dy], side, 1);
+  // Top face (top edge extruded).
+  cv.poly([tl[0], tl[1], tr[0], tr[1], tr[0] + dx, tr[1] + dy, tl[0] + dx, tl[1] + dy], top, 1);
+  // Front face.
+  cv.poly([tl[0], tl[1], tr[0], tr[1], br[0], br[1], bl[0], bl[1]], face, 1);
+  // Warm shade on the lower half of the front face.
+  const midL = [(tl[0] + bl[0]) / 2, (tl[1] + bl[1]) / 2];
+  const midR = [(tr[0] + br[0]) / 2, (tr[1] + br[1]) / 2];
+  cv.poly([midL[0], midL[1], midR[0], midR[1], br[0], br[1], bl[0], bl[1]], AMBER_DEEP, 0.28);
+  // Bright rim along the top edge.
+  cv.line(tl[0], tl[1], tr[0], tr[1], 4, AMBER_HI, 0.9);
+  cv.line(tl[0], tl[1], bl[0], bl[1], 3, AMBER_HI, 0.45);
+  return [tl, tr, br, bl];
+}
+
+// One glowing pip placed by fractions along the domino's own axes.
+function pip(cv: Canvas, corners: [number, number][], fu: number, fv: number, r: number): void {
+  const [tl, tr, br] = corners;
+  const ux = (tr[0] - tl[0]) / 2;
+  const uy = (tr[1] - tl[1]) / 2;
+  const vx = (br[0] - tr[0]) / 2;
+  const vy = (br[1] - tr[1]) / 2;
+  const cx = (tl[0] + br[0]) / 2 + ux * fu + vx * fv;
+  const cy = (tl[1] + br[1]) / 2 + uy * fu + vy * fv;
+  cv.glow(cx, cy, r * 3.2, AMBER_HI, 0.5);
+  cv.disc(cx, cy, r, WHITE, 1);
+  cv.disc(cx - r * 0.25, cy - r * 0.25, r * 0.45, AMBER_HI, 0.9);
+}
+
+// ---- the scene ----
+function draw(): Canvas {
+  const cv = new Canvas();
+
+  // 1. Night sky.
+  cv.gradRect(0, 0, W, 900, INK, SKY_LOW);
+  cv.gradRect(0, 600, W, 900, SKY_MID, SKY_LOW);
+
+  // 2. Nebula washes (deterministic, low alpha).
+  cv.glow(180, 240, 300, VIOLET, 0.16);
+  cv.glow(880, 180, 260, CYAN_DEEP, 0.14);
+  cv.glow(700, 700, 320, [150, 40, 90], 0.10);
+
+  // 3. Stars, some with a cross sparkle.
+  for (let i = 0; i < 260; i++) {
+    const x = rand() * W;
+    const y = rand() * 860;
+    const b = 0.25 + rand() * 0.75;
+    const r = rand() < 0.12 ? 2.2 : 1.2;
+    cv.disc(x, y, r, WHITE, b);
+    if (rand() < 0.08) {
+      cv.line(x - 7, y, x + 7, y, 1, WHITE, b * 0.7);
+      cv.line(x, y - 7, x, y + 7, 1, WHITE, b * 0.7);
+    }
+  }
+
+  // 4. A huge pale moon, half out of frame top-right, ringed in cyan.
+  cv.glow(880, 120, 190, CYAN, 0.20);
+  cv.disc(880, 120, 92, [232, 240, 255], 1);
+  cv.disc(852, 96, 18, [200, 210, 235], 0.8);
+  cv.disc(912, 150, 12, [200, 210, 235], 0.8);
+  cv.disc(880, 148, 8, [210, 218, 240], 0.8);
+
+  // 5. Distant ridge silhouette.
+  const ridge: number[] = [0, 884];
+  for (let x = 0; x <= W; x += 64) {
+    ridge.push(x, 868 + Math.sin(x * 0.011) * 10 + (rand() - 0.5) * 6);
+  }
+  ridge.push(W, 884);
+  cv.poly(ridge, [10, 12, 34], 1);
+
+  // 6. Ground: dark floor with a soft reflection band.
+  cv.gradRect(0, 884, W, H, GROUND, [5, 3, 13]);
+  cv.glow(512, 884, 420, AMBER, 0.05);
+  for (let i = 0; i < 12; i++) {
+    const x = rand() * W;
+    cv.line(x, 900 + rand() * 110, x + 40 + rand() * 90, 900 + rand() * 110, 2, AMBER, 0.03 + rand() * 0.03);
+  }
+
+  // 7. The row of small dominoes, marching to the right, shrinking away.
+  const row: Array<[number, number, number, number, number]> = [
+    [640, 838, 62, 108, 0],
+    [716, 846, 54, 94, 0],
+    [784, 852, 46, 80, 0],
+    [844, 856, 38, 66, 0],
+    [896, 858, 32, 56, 0.5],
+  ];
+  for (const [x, y, w, h, a] of row) {
+    const c = domino(cv, x, y, w, h, a, [214, 128, 30], [255, 190, 80], [120, 62, 10]);
+    pip(cv, c, 0, 0, Math.max(4, w * 0.07));
+  }
+
+  // 8. Impact burst where the giant domino is about to land.
+  const bx = 872;
+  const by = 852;
+  cv.glow(bx, by, 200, AMBER_HI, 0.55);
+  cv.glow(bx, by, 90, WHITE, 0.7);
+  for (let i = 0; i < 9; i++) {
+    const ang = (i / 9) * Math.PI * 2 + 0.35;
+    const len = 70 + ((i * 53) % 90);
+    cv.line(
+      bx + Math.cos(ang) * 18,
+      by + Math.sin(ang) * 18,
+      bx + Math.cos(ang) * len,
+      by + Math.sin(ang) * len,
+      5 - (i % 3),
+      i % 2 === 0 ? AMBER_HI : WHITE,
+      0.75,
+    );
+  }
+  // Chips flying off the burst.
+  for (let i = 0; i < 14; i++) {
+    const ang = rand() * Math.PI * 2;
+    const d = 30 + rand() * 130;
+    const x = bx + Math.cos(ang) * d;
+    const y = by + Math.sin(ang) * d * 0.7 - rand() * 40;
+    cv.disc(x, y, 2 + rand() * 4, i % 3 === 0 ? WHITE : AMBER, 0.9);
+  }
+
+  // 9. Motion streaks trailing the giant domino's top edge (kept clear
+  // of the headline text above).
+  cv.curve(380, 270, 300, 230, 260, 190, 10, CYAN, 0.35);
+  cv.curve(410, 320, 340, 280, 290, 230, 7, CYAN, 0.28);
+  cv.curve(360, 350, 310, 320, 260, 280, 5, WHITE, 0.22);
+
+  // 10. THE GIANT DOMINO, mid-fall, leaning hard to the right.
+  cv.glow(540, 470, 420, AMBER, 0.22);
+  const hero = domino(cv, 540, 500, 380, 620, 0.38, AMBER, AMBER_HI, AMBER_DEEP);
+  // Die-five pips, glowing.
+  pip(cv, hero, -0.52, -0.55, 26);
+  pip(cv, hero, 0.52, -0.55, 26);
+  pip(cv, hero, 0, 0, 30);
+  pip(cv, hero, -0.52, 0.55, 26);
+  pip(cv, hero, 0.52, 0.55, 26);
+  // A jagged crack of light across the face: the fall is already won.
+  const cA = rot(540 - 120, 500 - 310, 540, 500, 0.38);
+  const cB = rot(540 - 30, 500 - 90, 540, 500, 0.38);
+  const cC = rot(540 + 40, 500 + 80, 540, 500, 0.38);
+  const cD = rot(540 + 90, 500 + 300, 540, 500, 0.38);
+  cv.line(cA[0], cA[1], cB[0], cB[1], 3, WHITE, 0.85);
+  cv.line(cB[0], cB[1], cC[0], cC[1], 3, WHITE, 0.85);
+  cv.line(cC[0], cC[1], cD[0], cD[1], 3, WHITE, 0.85);
+  cv.glow((cB[0] + cC[0]) / 2, (cB[1] + cC[1]) / 2, 120, AMBER_HI, 0.25);
+
+  // 11. A starburst where the domino's top corner tears the sky.
+  const topCorner = hero[1];
+  cv.glow(topCorner[0], topCorner[1], 110, AMBER_HI, 0.5);
+  for (let i = 0; i < 6; i++) {
+    const ang = -Math.PI / 2 + (i - 2.5) * 0.42;
+    cv.line(
+      topCorner[0] + Math.cos(ang) * 10,
+      topCorner[1] + Math.sin(ang) * 10,
+      topCorner[0] + Math.cos(ang) * (46 + (i % 2) * 34),
+      topCorner[1] + Math.sin(ang) * (46 + (i % 2) * 34),
+      4,
+      AMBER_HI,
+      0.8,
+    );
+  }
+
+  // 12. The tiny agent at the foot of the giant, arms raised, beam in hand.
+  const fx = 300;
+  const fy = 905;
+  cv.glow(fx, fy - 30, 90, CYAN, 0.5);
+  // Beam from the agent's hands up to the domino's lower corner.
+  const handX = fx;
+  const handY = fy - 52;
+  const target = hero[3];
+  cv.line(handX, handY, target[0], target[1], 8, CYAN, 0.25);
+  cv.line(handX, handY, target[0], target[1], 3, [190, 250, 255], 0.9);
+  cv.glow(handX, handY, 26, CYAN, 0.8);
+  // Body: head, torso, raised arms, legs.
+  cv.disc(fx, fy - 44, 10, [220, 250, 255], 1);
+  cv.disc(fx, fy - 44, 10, CYAN, 0.35);
+  cv.line(fx - 3, fy - 34, fx - 3, fy - 8, 7, [220, 250, 255], 1);
+  cv.line(fx + 3, fy - 34, fx + 3, fy - 8, 7, [220, 250, 255], 1);
+  cv.line(fx - 2, fy - 32, fx - 16, fy - 52, 5, [220, 250, 255], 1);
+  cv.line(fx + 2, fy - 32, fx + 16, fy - 52, 5, [220, 250, 255], 1);
+  cv.line(fx - 3, fy - 8, fx - 10, fy + 2, 5, [220, 250, 255], 1);
+  cv.line(fx + 3, fy - 8, fx + 10, fy + 2, 5, [220, 250, 255], 1);
+  // The agent's shadow, stretched toward the viewer.
+  cv.poly([fx - 18, fy + 4, fx + 18, fy + 4, fx + 30, fy + 18, fx - 30, fy + 18], [0, 0, 0], 0.4);
+
+  // 13. The word. Big, plain, impossible to miss.
+  cv.glow(120, 110, 190, AMBER_HI, 0.18);
+  drawText(cv, "PUSH.", 56, 62, 15, WHITE, 1);
+  drawText(cv, "PUSH.", 60, 66, 15, AMBER_HI, 0.35);
+
+  // 14. Vignette: darken the corners so the centre burns brighter.
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const dx = (x - W / 2) / (W / 2);
+      const dy = (y - H / 2) / (H / 2);
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d > 0.95) {
+        const a = Math.min(0.5, (d - 0.95) * 1.6);
+        cv.px(x, y, [0, 0, 0], a);
+      }
+    }
+  }
+  return cv;
+}
+
+function main(): void {
+  const outDir = process.env.MAKEFUN_OUTPUT_DIR ?? "/output";
+  mkdirSync(outDir, { recursive: true });
+  const png = encodePNG(draw());
+  writeFileSync(join(outDir, "entry.png"), png);
+}
+
+main();
