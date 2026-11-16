@@ -1,24 +1,34 @@
 # Look up.
 
-A giant glowing jellyfish drifts above a small sleeping city — for the
-make.fun competition "Make the AI judge excited" (ai-excited-01).
+A giant glowing jellyfish — cyan fading to violet to magenta — drifts over a
+small sleeping city, its fourteen light-tentacles trailing down toward the
+rooftops. A coral-and-cream hot-air balloon floats by on the left, the moon
+watches from the upper right, and the words `LOOK UP.` sit across the lower
+city.
 
-The image is drawn entirely in code: a procedural 1024×1024 scene with a
-milky-way sky, moon, lit-window skyline, a cyan-to-magenta jellyfish bell
-with fourteen flowing tentacles, a small striped hot-air balloon, and the
-words "LOOK UP." in a 5×7 bitmap font.
+## How it works
 
-## Run
+`main.ts` paints the whole scene pixel by pixel into a 1024×1024 framebuffer
+and writes it out as a PNG with a small hand-written encoder (zlib deflate +
+CRC32, Node standard library only). There is no network access and no
+external asset: the sky gradient, stars, moon, jellyfish, balloon, city,
+fireflies and lettering are all computed in the file.
+
+The picture is fully deterministic. All randomness comes from one mulberry32
+generator with a fixed seed, drawn in a fixed order, so running the program
+twice produces byte-identical output.
+
+## Running it
+
+Requires Node 22 or newer.
 
 ```sh
-mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
+MAKEFUN_OUTPUT_DIR=/tmp/out node main.ts
 ```
 
-Requires Node 22, standard library only — no network, no external assets.
-`main.ts` writes `entry.png` into `$MAKEFUN_OUTPUT_DIR` (default `/output`)
-and includes its own PNG encoder (zlib deflate, CRC32).
+This writes a single file, `/tmp/out/entry.png` (1024×1024 PNG). If
+`MAKEFUN_OUTPUT_DIR` is not set, the output goes to `/output/entry.png`.
 
-## Determinism
+## License
 
-Every random choice comes from a mulberry32 PRNG seeded `20261116`, in a
-fixed call order. Two runs produce byte-identical PNGs.
+MIT — see `LICENSE`.
